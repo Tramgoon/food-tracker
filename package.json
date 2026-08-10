@@ -1,0 +1,20 @@
+{
+  "name": "food-tracker",
+  "version": "1.0.0",
+  "description": "AI-powered food and weight tracker with agent API. Local SQLite, no ads, no cloud.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["food", "calories", "weight", "tracker", "sqlite"],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
