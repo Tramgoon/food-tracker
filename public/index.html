@@ -96,11 +96,6 @@
         </div>
         <div class="panel stack" id="weightSummary"></div>
       </div>
-      <div class="panel">
-        <h2>Health</h2>
-        <div class="grid" id="healthWidget"></div>
-      </div>
-      <div class="spacer"></div>
       <div class="grid" id="metricCards"></div>
       <div class="spacer"></div>
       <div class="panel">
@@ -203,22 +198,7 @@
       </div>
     </section>
 
-    <section id="insights" class="view">
-      <div class="grid two">
-        <div class="panel">
-          <h2>Daily Calories</h2>
-          <div class="bars" id="calorieChart"></div>
-        </div>
-        <div class="panel">
-          <h2>Weight Trend</h2>
-          <div class="chart-wrap" id="weightChart"></div>
-        </div>
-      </div>
-      <div class="spacer"></div>
-      <div class="grid" id="insightStats"></div>
-      <div class="spacer"></div>
-      <div class="panel"><h2>Insight</h2><p id="insightText"></p></div>
-      <div class="spacer"></div>
+    <section id="health" class="view">
       <div class="panel stack">
         <h2>Health</h2>
         <div class="grid" id="healthStats"></div>
@@ -246,6 +226,23 @@
         <p id="healthInsightText"></p>
       </div>
     </section>
+
+    <section id="insights" class="view">
+      <div class="grid two">
+        <div class="panel">
+          <h2>Daily Calories</h2>
+          <div class="bars" id="calorieChart"></div>
+        </div>
+        <div class="panel">
+          <h2>Weight Trend</h2>
+          <div class="chart-wrap" id="weightChart"></div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <div class="grid" id="insightStats"></div>
+      <div class="spacer"></div>
+      <div class="panel"><h2>Insight</h2><p id="insightText"></p></div>
+    </section>
   </main>
   <div class="toast" id="toast"></div>
 
@@ -255,6 +252,7 @@
       ['food', 'Food Log'],
       ['weight', 'Weight'],
       ['groceries', 'Groceries'],
+      ['health', 'Health'],
       ['insights', 'Insights']
     ];
     const groceryCategories = ['produce', 'meat', 'dairy', 'pantry', 'frozen', 'snacks', 'drinks', 'household', 'other'];
@@ -325,7 +323,6 @@
       }).join('');
 
       renderWeightBlocks();
-      renderHealthWidget();
       renderConfigForm();
     }
 
@@ -484,43 +481,33 @@
         ['Current streak', stats.current_streak]
       ].map(([label, value]) => `<div class="card metric"><span class="muted">${label}</span><strong>${fmt(value)}</strong></div>`).join('');
       $('insightText').textContent = insights.text;
-      renderHealthInsights();
     }
 
-    function renderHealthWidget() {
+    function renderHealth() {
+      const workouts = state.health_workouts || [];
+      const currentMonth = today().slice(0, 7);
+      const monthWorkouts = workouts.filter((row) => row.date.startsWith(currentMonth));
+      const monthCalories = monthWorkouts.reduce((sum, row) => sum + Number(row.calories_burned || 0), 0);
       const todaySteps = (state.health_steps || []).find((row) => row.date === today());
       const recentSleep = [...(state.health_sleep || [])].reverse().find((row) => row.sleep_seconds > 0);
       const todayHeartRate = (state.health_heart_rate || []).find((row) => row.date === today())
         || [...(state.health_heart_rate || [])].reverse().find((row) => row.resting_bpm > 0);
 
-      $('healthWidget').innerHTML = [
+      $('healthStats').innerHTML = [
         ['Today steps', todaySteps ? fmt(todaySteps.step_count) : '-', 'steps'],
-        ['Last sleep', recentSleep ? formatHours(recentSleep.sleep_seconds) : '-', recentSleep ? recentSleep.date : ''],
-        ['Resting HR', todayHeartRate && todayHeartRate.resting_bpm ? fmt(todayHeartRate.resting_bpm) : '-', 'bpm']
+        ["Last night's sleep", recentSleep ? formatHours(recentSleep.sleep_seconds) : '-', recentSleep ? recentSleep.date : ''],
+        ['Resting HR', todayHeartRate && todayHeartRate.resting_bpm ? fmt(todayHeartRate.resting_bpm) : '-', 'bpm'],
+        ['Workouts this month', fmt(monthWorkouts.length), currentMonth],
+        ['Calories burned this month', fmt(monthCalories), 'kcal']
       ].map(([label, value, unit]) => `<div class="card metric"><span class="muted">${label}</span><strong>${value}</strong><span>${unit}</span></div>`).join('');
-    }
 
-    function renderHealthInsights() {
       const steps = state.health_steps || [];
       const sleep = state.health_sleep || [];
       const heartRate = state.health_heart_rate || [];
-      const workouts = state.health_workouts || [];
-      const healthSummary = state.health_summary || {};
-      const currentMonth = today().slice(0, 7);
-      const monthWorkouts = workouts.filter((row) => row.date.startsWith(currentMonth));
-      const monthCalories = monthWorkouts.reduce((sum, row) => sum + Number(row.calories_burned || 0), 0);
-
-      $('healthStats').innerHTML = [
-        ['Avg steps 7d', healthSummary.avg_steps_7d ? fmt(healthSummary.avg_steps_7d) : '-'],
-        ['Avg sleep 7d', healthSummary.avg_sleep_7d ? formatHours(healthSummary.avg_sleep_7d) : '-'],
-        ['Avg resting HR 7d', healthSummary.avg_resting_hr_7d ? fmt(healthSummary.avg_resting_hr_7d) : '-'],
-        ['Workouts this month', fmt(monthWorkouts.length)],
-        ['Calories burned this month', fmt(monthCalories)]
-      ].map(([label, value]) => `<div class="card metric"><span class="muted">${label}</span><strong>${value}</strong></div>`).join('');
 
       renderBarChart('stepsChart', fillDateWindow(steps, 14, 'step_count'), 'step_count', (row) => `${row.date}: ${fmt(row.step_count)} steps`);
       renderBarChart('sleepChart', fillDateWindow(sleep, 14, 'sleep_seconds'), 'sleep_seconds', (row) => `${row.date}: ${formatHours(row.sleep_seconds)}`);
-      renderHeartRateChart(heartRate);
+      renderHeartRateChart(fillDateWindow(heartRate, 30, 'resting_bpm'));
       renderWorkoutRows(workouts);
       $('healthInsightText').textContent = getHealthInsight();
     }
@@ -659,6 +646,7 @@
       renderFood();
       renderWeight();
       renderGroceries();
+      renderHealth();
       renderInsights();
       $('weightForm').date.value = $('weightForm').date.value || today();
       $('foodForm').date.value = $('foodForm').date.value || today();
