@@ -47,6 +47,10 @@
     .meal-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
     .food-item{display:grid;grid-template-columns:1fr auto;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
     .food-item:first-of-type{border-top:0}
+    .grocery-item{display:grid;grid-template-columns:1fr auto;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+    .grocery-item:first-of-type{border-top:0}
+    .suggestion-list{display:grid;gap:10px}
+    .breakdown{display:flex;gap:8px;flex-wrap:wrap}
     .tag{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:2px 8px;color:var(--muted);font-size:12px}
     .delete{color:var(--danger);min-width:42px}
     table{width:100%;border-collapse:collapse}
@@ -150,6 +154,42 @@
       </div>
     </section>
 
+    <section id="groceries" class="view">
+      <div class="hero">
+        <div class="panel">
+          <p class="muted">Spent this month</p>
+          <div id="groceryMonthTotal" class="remaining positive">£0</div>
+          <p class="muted" id="groceryMonthDetail"></p>
+        </div>
+        <div class="panel">
+          <h2>Quick Add</h2>
+          <form id="groceryQuickForm" class="form-grid">
+            <label class="span2">Name<input name="name" required></label>
+            <label>Price<input name="price" type="number" min="0" step="0.01"></label>
+            <button type="submit">Add</button>
+          </form>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Add Grocery</h2>
+        <form id="groceryForm" class="form-grid six">
+          <label class="span2">Name<input name="name" required></label>
+          <label>Quantity<input name="quantity" value="1"></label>
+          <label>Category<select name="category" id="groceryCategory"></select></label>
+          <label>Price<input name="price" type="number" min="0" step="0.01"></label>
+          <label>Date<input name="date" type="date" required></label>
+          <button type="submit">Add grocery</button>
+        </form>
+      </div>
+      <div class="spacer"></div>
+      <div class="meal-grid" id="groceryGroups"></div>
+      <div class="spacer"></div>
+      <div class="panel">
+        <h2>Suggestions for next trip</h2>
+        <div class="grid two" id="grocerySuggestions"></div>
+      </div>
+    </section>
+
     <section id="insights" class="view">
       <div class="grid two">
         <div class="panel">
@@ -174,12 +214,15 @@
       ['dashboard', 'Dashboard'],
       ['food', 'Food Log'],
       ['weight', 'Weight'],
+      ['groceries', 'Groceries'],
       ['insights', 'Insights']
     ];
+    const groceryCategories = ['produce', 'meat', 'dairy', 'pantry', 'frozen', 'snacks', 'drinks', 'household', 'other'];
     let state = null;
 
     const $ = (id) => document.getElementById(id);
     const fmt = (n, digits = 0) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: digits });
+    const money = (n) => Number(n || 0).toLocaleString(undefined, { style: 'currency', currency: 'GBP' });
     const today = () => new Date().toISOString().slice(0, 10);
 
     function toast(message) {
@@ -298,6 +341,69 @@
       }).join('') || '<tr><td colspan="3" class="muted">No weights logged.</td></tr>';
     }
 
+    function renderGroceries() {
+      const groceries = state.groceries || [];
+      const month = today().slice(0, 7);
+      const monthItems = groceries.filter((item) => item.date.startsWith(month));
+      const monthTotal = monthItems.reduce((sum, item) => sum + Number(item.price || 0), 0);
+      $('groceryMonthTotal').textContent = money(monthTotal);
+      $('groceryMonthDetail').textContent = `${monthItems.length} item${monthItems.length === 1 ? '' : 's'} logged in ${month}`;
+
+      const categories = [...new Set([...groceryCategories, ...groceries.map((item) => item.category)])];
+      $('groceryGroups').innerHTML = categories.map((category) => {
+        const items = groceries.filter((item) => item.category === category);
+        if (!items.length) return '';
+        const total = items.reduce((sum, item) => sum + Number(item.price || 0), 0);
+        return `
+          <div class="panel">
+            <div class="row"><h2>${escapeHtml(titleCase(category))}</h2><span class="tag">${items.length} · ${money(total)}</span></div>
+            ${items.map((item) => `
+              <div class="grocery-item">
+                <div>
+                  <strong>${escapeHtml(item.name)}</strong>
+                  <p class="muted">${escapeHtml(item.quantity)} · ${money(item.price)} · ${item.date} <span class="tag">${escapeHtml(item.source)}</span></p>
+                </div>
+                <button class="delete" data-grocery-delete="${item.id}" title="Delete">x</button>
+              </div>
+            `).join('')}
+          </div>`;
+      }).join('') || '<div class="panel"><p class="muted">No groceries logged yet.</p></div>';
+
+      renderGrocerySuggestions();
+    }
+
+    function renderGrocerySuggestions() {
+      const suggestions = state.grocery_suggestions || {};
+      const regular = suggestions.regular_items || [];
+      const runningLow = suggestions.running_low || [];
+      const staleCategories = suggestions.stale_categories || [];
+      const spending = suggestions.category_spending || {};
+      const spendingRows = Object.entries(spending).sort((a, b) => b[1] - a[1]);
+
+      $('grocerySuggestions').innerHTML = [
+        `<div class="card">
+          <div class="row"><h3>Buy Again</h3><span class="tag">${regular.length}</span></div>
+          <div class="spacer"></div>
+          <div class="suggestion-list">${regular.map((item) => `<p><strong>${escapeHtml(item.name)}</strong> <span class="tag">buy again</span><br><span class="muted">${item.count} purchases, last on ${item.last_purchased}</span></p>`).join('') || '<p class="muted">No regular items yet.</p>'}</div>
+        </div>`,
+        `<div class="card">
+          <div class="row"><h3>Running Low</h3><span class="tag">${runningLow.length}</span></div>
+          <div class="spacer"></div>
+          <div class="suggestion-list">${runningLow.map((item) => `<p><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${item.days_since} days since last purchase</span></p>`).join('') || '<p class="muted">Nothing looks overdue.</p>'}</div>
+        </div>`,
+        `<div class="card">
+          <div class="row"><h3>Quiet Categories</h3><span class="tag">${staleCategories.length}</span></div>
+          <div class="spacer"></div>
+          <div class="breakdown">${staleCategories.map((category) => `<span class="tag">${escapeHtml(titleCase(category))}</span>`).join('') || '<p class="muted">All categories have recent activity.</p>'}</div>
+        </div>`,
+        `<div class="card">
+          <div class="row"><h3>Last 30 Days</h3><span class="tag">${spendingRows.length}</span></div>
+          <div class="spacer"></div>
+          <div class="suggestion-list">${spendingRows.map(([category, total]) => `<p><strong>${escapeHtml(titleCase(category))}</strong><br><span class="muted">${money(total)}</span></p>`).join('') || '<p class="muted">No category spending yet.</p>'}</div>
+        </div>`
+      ].join('');
+    }
+
     function renderInsights() {
       const insights = state.summary.insights;
       const calorieTarget = Number(state.summary.targets.calories || 0);
@@ -338,14 +444,21 @@
       return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
     }
 
+    function titleCase(value) {
+      return String(value || '').replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+    }
+
     function render() {
       renderDashboard();
       renderFood();
       renderWeight();
+      renderGroceries();
       renderInsights();
       $('weightForm').date.value = $('weightForm').date.value || today();
       $('foodForm').date.value = $('foodForm').date.value || today();
       $('quickForm').date.value = $('quickForm').date.value || today();
+      $('groceryForm').date.value = $('groceryForm').date.value || today();
+      $('groceryForm').quantity.value = $('groceryForm').quantity.value || '1';
     }
 
     async function load() {
@@ -358,6 +471,7 @@
     }
 
     renderNav();
+    $('groceryCategory').innerHTML = groceryCategories.map((category) => `<option value="${category}">${titleCase(category)}</option>`).join('');
     load().catch((error) => toast(error.message));
 
     $('foodForm').addEventListener('submit', async (event) => {
@@ -396,6 +510,34 @@
       state = res.state;
       render();
       toast('Weight saved');
+    });
+
+    $('groceryForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const res = await api('/api/groceries-web', { method: 'POST', body: JSON.stringify(formData(event.target)) });
+      state = res.state;
+      event.target.reset();
+      render();
+      toast('Grocery added');
+    });
+
+    $('groceryQuickForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const res = await api('/api/groceries-web', { method: 'POST', body: JSON.stringify(formData(event.target)) });
+      state = res.state;
+      event.target.reset();
+      render();
+      toast('Quick grocery saved');
+    });
+
+    $('groceryGroups').addEventListener('click', async (event) => {
+      const button = event.target.closest('button[data-grocery-delete]');
+      if (!button) return;
+      if (!confirm('Delete this grocery item?')) return;
+      const res = await api(`/api/groceries-web/${button.dataset.groceryDelete}`, { method: 'DELETE' });
+      state = res.state;
+      render();
+      toast('Grocery deleted');
     });
 
     $('configForm').addEventListener('submit', async (event) => {

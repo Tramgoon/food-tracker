@@ -13,6 +13,8 @@ const db = new Database(DATABASE_PATH);
 
 const MEAL_TYPES = new Set(['breakfast', 'lunch', 'dinner', 'snack']);
 const SOURCES = new Set(['me', 'agent']);
+const GROCERY_CATEGORIES = ['produce', 'meat', 'dairy', 'pantry', 'frozen', 'snacks', 'drinks', 'household', 'other'];
+const GROCERY_CATEGORY_VALUES = new Set([...GROCERY_CATEGORIES, 'general']);
 const CONFIG_KEYS = new Set([
   'calorie_target',
   'protein_target',
@@ -60,8 +62,22 @@ db.exec(`
     value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS groceries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    quantity TEXT NOT NULL DEFAULT '1',
+    category TEXT NOT NULL DEFAULT 'other',
+    price REAL NOT NULL DEFAULT 0,
+    date TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'me',
+    created_at TEXT NOT NULL,
+    CHECK (source IN ('me', 'agent'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_foods_date ON foods(date);
   CREATE INDEX IF NOT EXISTS idx_weight_log_date ON weight_log(date);
+  CREATE INDEX IF NOT EXISTS idx_groceries_date ON groceries(date);
+  CREATE INDEX IF NOT EXISTS idx_groceries_category ON groceries(category);
 `);
 
 app.use(express.json({ limit: '100kb' }));
@@ -255,6 +271,75 @@ function groupFoods(rows) {
   }, {});
 }
 
+function getRecentGroceries(days = 90) {
+  return db.prepare(`
+    SELECT *
+    FROM groceries
+    WHERE date >= date('now', ?)
+    ORDER BY date DESC, created_at DESC, id DESC
+  `).all(`-${days - 1} days`).map((row) => ({ ...row, price: Number(row.price || 0) }));
+}
+
+function getGrocerySuggestions() {
+  const regularRows = db.prepare(`
+    SELECT
+      LOWER(TRIM(name)) AS normalized_name,
+      name,
+      COUNT(*) AS count,
+      MAX(date) AS last_purchased
+    FROM groceries
+    WHERE date >= date('now', '-89 days')
+    GROUP BY normalized_name
+    HAVING COUNT(*) >= 3
+    ORDER BY count DESC, last_purchased DESC, name ASC
+  `).all();
+
+  const runningLowRows = db.prepare(`
+    SELECT
+      LOWER(TRIM(name)) AS normalized_name,
+      name,
+      MAX(date) AS last_purchased
+    FROM groceries
+    GROUP BY normalized_name
+    HAVING MAX(date) < date('now', '-29 days')
+    ORDER BY last_purchased ASC, name ASC
+    LIMIT 20
+  `).all();
+
+  const spendingRows = db.prepare(`
+    SELECT category, COALESCE(SUM(price), 0) AS total
+    FROM groceries
+    WHERE date >= date('now', '-29 days')
+    GROUP BY category
+    ORDER BY total DESC, category ASC
+  `).all();
+
+  const recentCategoryRows = db.prepare(`
+    SELECT category, MAX(date) AS last_purchased
+    FROM groceries
+    GROUP BY category
+  `).all();
+  const lastCategoryPurchase = new Map(recentCategoryRows.map((row) => [row.category, row.last_purchased]));
+
+  return {
+    regular_items: regularRows.map((row) => ({
+      name: row.name,
+      count: Number(row.count || 0),
+      last_purchased: row.last_purchased,
+    })),
+    running_low: runningLowRows.map((row) => ({
+      name: row.name,
+      last_purchased: row.last_purchased,
+      days_since: Math.max(0, Math.floor((Date.parse(`${todayISO()}T00:00:00Z`) - Date.parse(`${row.last_purchased}T00:00:00Z`)) / 86400000)),
+    })),
+    category_spending: Object.fromEntries(spendingRows.map((row) => [row.category, Number(row.total || 0)])),
+    stale_categories: GROCERY_CATEGORIES.filter((category) => {
+      const lastPurchased = lastCategoryPurchase.get(category);
+      return !lastPurchased || lastPurchased < addDays(todayISO(), -29);
+    }),
+  };
+}
+
 function getSummary() {
   const date = todayISO();
   const config = readConfig();
@@ -285,6 +370,8 @@ function getState() {
     summary: getSummary(),
     today_foods: db.prepare('SELECT * FROM foods WHERE date = ? ORDER BY created_at ASC, id ASC').all(date),
     weight_history: db.prepare('SELECT * FROM weight_log ORDER BY date DESC LIMIT 90').all(),
+    groceries: getRecentGroceries(90),
+    grocery_suggestions: getGrocerySuggestions(),
     config: readConfig(),
   };
 }
@@ -327,6 +414,31 @@ function insertFood(body, source) {
   return db.prepare('SELECT * FROM foods WHERE id = ?').get(result.lastInsertRowid);
 }
 
+function validateGrocery(body) {
+  const name = String(body.name || '').trim();
+  const quantity = String(body.quantity || '1').trim() || '1';
+  const category = String(body.category || 'other').trim().toLowerCase();
+  const price = numberValue(body.price);
+  const date = body.date || todayISO();
+  if (!name) return { error: 'name is required' };
+  if (!GROCERY_CATEGORY_VALUES.has(category)) return { error: 'invalid category' };
+  if (price < 0) return { error: 'price must be positive' };
+  if (!isDate(date)) return { error: 'invalid date' };
+  return { name, quantity, category, price, date };
+}
+
+function insertGrocery(body, source) {
+  if (!SOURCES.has(source)) throw new Error('invalid source');
+  const grocery = validateGrocery(body);
+  if (grocery.error) return grocery;
+  const result = db.prepare(`
+    INSERT INTO groceries (name, quantity, category, price, date, source, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(grocery.name, grocery.quantity, grocery.category, grocery.price, grocery.date, source, nowISO());
+  const row = db.prepare('SELECT * FROM groceries WHERE id = ?').get(result.lastInsertRowid);
+  return { ...row, price: Number(row.price || 0) };
+}
+
 function upsertWeight(body, source) {
   if (!SOURCES.has(source)) throw new Error('invalid source');
   const weight = numberValue(body.weight, NaN);
@@ -354,6 +466,16 @@ app.post('/api/food', requireAgent, (req, res) => {
   res.status(201).json({ food, summary: getSummary() });
 });
 
+app.post('/api/groceries', requireAgent, (req, res) => {
+  const grocery = insertGrocery(req.body, 'agent');
+  if (grocery.error) return res.status(400).json(grocery);
+  res.status(201).json({ grocery });
+});
+
+app.get('/api/groceries', requireAgent, (req, res) => {
+  res.json({ groceries: db.prepare('SELECT * FROM groceries ORDER BY date DESC, created_at DESC, id DESC').all() });
+});
+
 app.post('/api/weight', requireAgent, (req, res) => {
   const weight = upsertWeight(req.body, 'agent');
   if (weight.error) return res.status(400).json(weight);
@@ -370,9 +492,21 @@ app.post('/api/food-web', (req, res) => {
   res.status(201).json({ food, state: getState() });
 });
 
+app.post('/api/groceries-web', (req, res) => {
+  const grocery = insertGrocery(req.body, 'me');
+  if (grocery.error) return res.status(400).json(grocery);
+  res.status(201).json({ grocery, state: getState() });
+});
+
 app.delete('/api/food-web/:id', (req, res) => {
   const result = db.prepare('DELETE FROM foods WHERE id = ?').run(Number(req.params.id));
   if (!result.changes) return res.status(404).json({ error: 'food not found' });
+  res.json({ ok: true, state: getState() });
+});
+
+app.delete('/api/groceries-web/:id', (req, res) => {
+  const result = db.prepare('DELETE FROM groceries WHERE id = ?').run(Number(req.params.id));
+  if (!result.changes) return res.status(404).json({ error: 'grocery not found' });
   res.json({ ok: true, state: getState() });
 });
 
