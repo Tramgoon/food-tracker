@@ -36,6 +36,8 @@
     .metric strong{font-size:28px}
     .stack{display:grid;gap:14px}
     .row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .actions button{padding:8px 10px;font-size:13px}
     .progress{height:12px;background:var(--input);border:1px solid var(--line);border-radius:999px;overflow:hidden;position:relative}
     .fill{height:100%;background:var(--accent);width:0}
     .fill.warn{background:var(--warn)}
@@ -103,6 +105,11 @@
       <div class="panel">
         <h2>Targets</h2>
         <form id="configForm" class="form-grid six"></form>
+        <div class="spacer"></div>
+        <div class="actions">
+          <button type="button" id="exportJson">Export JSON</button>
+          <button type="button" id="exportCsv">Export CSV</button>
+        </div>
       </div>
     </section>
 
@@ -470,9 +477,16 @@
       return Object.fromEntries(new FormData(form).entries());
     }
 
+    function downloadExport(url) {
+      window.location.href = url;
+    }
+
     renderNav();
     $('groceryCategory').innerHTML = groceryCategories.map((category) => `<option value="${category}">${titleCase(category)}</option>`).join('');
     load().catch((error) => toast(error.message));
+
+    $('exportJson').addEventListener('click', () => downloadExport('/api/export'));
+    $('exportCsv').addEventListener('click', () => downloadExport('/api/export.csv'));
 
     $('foodForm').addEventListener('submit', async (event) => {
       event.preventDefault();

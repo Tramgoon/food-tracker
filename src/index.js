@@ -106,6 +106,48 @@ function readConfig() {
   return Object.fromEntries(rows.map((row) => [row.key, row.value]));
 }
 
+function getExportData() {
+  return {
+    foods: db.prepare('SELECT id, description, calories, protein, carbs, fat, meal_type, date, source, created_at FROM foods ORDER BY date ASC, created_at ASC, id ASC').all(),
+    weight_log: db.prepare('SELECT id, weight, date, source, created_at FROM weight_log ORDER BY date ASC, created_at ASC, id ASC').all(),
+    groceries: db.prepare('SELECT id, name, quantity, category, price, date, source, created_at FROM groceries ORDER BY date ASC, created_at ASC, id ASC').all(),
+    config: readConfig(),
+    exported_at: nowISO(),
+  };
+}
+
+function exportFilename(extension) {
+  const stamp = nowISO().replace(/[:.]/g, '-');
+  return `food-tracker-export-${stamp}.${extension}`;
+}
+
+function csvValue(value) {
+  if (value === null || value === undefined) return '';
+  const text = String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function csvSection(title, headers, rows) {
+  return [
+    title,
+    headers.join(','),
+    ...rows.map((row) => headers.map((header) => csvValue(row[header])).join(',')),
+  ].join('\n');
+}
+
+function exportCsv(data) {
+  const configRows = Object.entries(data.config)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => ({ key, value }));
+
+  return [
+    csvSection('FOOD', ['id', 'description', 'calories', 'protein', 'carbs', 'fat', 'meal_type', 'date', 'source', 'created_at'], data.foods),
+    csvSection('WEIGHT', ['id', 'weight', 'date', 'source', 'created_at'], data.weight_log),
+    csvSection('GROCERIES', ['id', 'name', 'quantity', 'category', 'price', 'date', 'source', 'created_at'], data.groceries),
+    csvSection('CONFIG', ['key', 'value'], configRows),
+  ].join('\n\n') + '\n';
+}
+
 function configNumber(config, key) {
   if (!config[key]) return null;
   const n = Number(config[key]);
@@ -484,6 +526,17 @@ app.post('/api/weight', requireAgent, (req, res) => {
 
 app.get('/api/state', (req, res) => {
   res.json(getState());
+});
+
+app.get('/api/export', (req, res) => {
+  res.setHeader('Content-Disposition', `attachment; filename="${exportFilename('json')}"`);
+  res.json(getExportData());
+});
+
+app.get('/api/export.csv', (req, res) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${exportFilename('csv')}"`);
+  res.send(exportCsv(getExportData()));
 });
 
 app.post('/api/food-web', (req, res) => {
