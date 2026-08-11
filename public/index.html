@@ -62,6 +62,7 @@
     .bar{background:var(--accent);border-radius:6px 6px 0 0;min-height:4px}
     .chart-wrap{height:220px;position:relative;border-left:1px solid var(--line);border-bottom:1px solid var(--line);padding:8px}
     .dot{position:absolute;width:9px;height:9px;background:var(--warn);border-radius:50%;transform:translate(-50%,50%)}
+    .line-segment{position:absolute;height:2px;background:var(--warn);transform-origin:left center;opacity:.8}
     .target-line{position:absolute;left:0;right:0;border-top:2px solid var(--danger);z-index:2;pointer-events:none}
     .target-line span{position:absolute;right:0;top:-22px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:2px 6px;color:var(--danger);font-size:12px;white-space:nowrap}
     .toast{position:fixed;right:18px;bottom:18px;background:var(--panel-2);border:1px solid var(--line);padding:12px 14px;border-radius:8px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none}
@@ -95,6 +96,11 @@
         </div>
         <div class="panel stack" id="weightSummary"></div>
       </div>
+      <div class="panel">
+        <h2>Health</h2>
+        <div class="grid" id="healthWidget"></div>
+      </div>
+      <div class="spacer"></div>
       <div class="grid" id="metricCards"></div>
       <div class="spacer"></div>
       <div class="panel">
@@ -212,6 +218,33 @@
       <div class="grid" id="insightStats"></div>
       <div class="spacer"></div>
       <div class="panel"><h2>Insight</h2><p id="insightText"></p></div>
+      <div class="spacer"></div>
+      <div class="panel stack">
+        <h2>Health</h2>
+        <div class="grid" id="healthStats"></div>
+        <div class="grid two">
+          <div>
+            <h3>Daily Steps</h3>
+            <div class="spacer"></div>
+            <div class="bars" id="stepsChart"></div>
+          </div>
+          <div>
+            <h3>Sleep Duration</h3>
+            <div class="spacer"></div>
+            <div class="bars" id="sleepChart"></div>
+          </div>
+        </div>
+        <div>
+          <h3>Resting Heart Rate</h3>
+          <div class="spacer"></div>
+          <div class="chart-wrap" id="heartRateChart"></div>
+        </div>
+        <div>
+          <h3>Workout Log</h3>
+          <table><thead><tr><th>Date</th><th>Type</th><th>Duration</th><th>Calories</th><th>Distance</th></tr></thead><tbody id="workoutRows"></tbody></table>
+        </div>
+        <p id="healthInsightText"></p>
+      </div>
     </section>
   </main>
   <div class="toast" id="toast"></div>
@@ -231,6 +264,11 @@
     const fmt = (n, digits = 0) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: digits });
     const money = (n) => Number(n || 0).toLocaleString(undefined, { style: 'currency', currency: 'GBP' });
     const today = () => new Date().toISOString().slice(0, 10);
+    const addDays = (date, days) => {
+      const next = new Date(`${date}T00:00:00Z`);
+      next.setUTCDate(next.getUTCDate() + days);
+      return next.toISOString().slice(0, 10);
+    };
 
     function toast(message) {
       const el = $('toast');
@@ -287,6 +325,7 @@
       }).join('');
 
       renderWeightBlocks();
+      renderHealthWidget();
       renderConfigForm();
     }
 
@@ -445,6 +484,166 @@
         ['Current streak', stats.current_streak]
       ].map(([label, value]) => `<div class="card metric"><span class="muted">${label}</span><strong>${fmt(value)}</strong></div>`).join('');
       $('insightText').textContent = insights.text;
+      renderHealthInsights();
+    }
+
+    function renderHealthWidget() {
+      const todaySteps = (state.health_steps || []).find((row) => row.date === today());
+      const recentSleep = [...(state.health_sleep || [])].reverse().find((row) => row.sleep_seconds > 0);
+      const todayHeartRate = (state.health_heart_rate || []).find((row) => row.date === today())
+        || [...(state.health_heart_rate || [])].reverse().find((row) => row.resting_bpm > 0);
+
+      $('healthWidget').innerHTML = [
+        ['Today steps', todaySteps ? fmt(todaySteps.step_count) : '-', 'steps'],
+        ['Last sleep', recentSleep ? formatHours(recentSleep.sleep_seconds) : '-', recentSleep ? recentSleep.date : ''],
+        ['Resting HR', todayHeartRate && todayHeartRate.resting_bpm ? fmt(todayHeartRate.resting_bpm) : '-', 'bpm']
+      ].map(([label, value, unit]) => `<div class="card metric"><span class="muted">${label}</span><strong>${value}</strong><span>${unit}</span></div>`).join('');
+    }
+
+    function renderHealthInsights() {
+      const steps = state.health_steps || [];
+      const sleep = state.health_sleep || [];
+      const heartRate = state.health_heart_rate || [];
+      const workouts = state.health_workouts || [];
+      const healthSummary = state.health_summary || {};
+      const currentMonth = today().slice(0, 7);
+      const monthWorkouts = workouts.filter((row) => row.date.startsWith(currentMonth));
+      const monthCalories = monthWorkouts.reduce((sum, row) => sum + Number(row.calories_burned || 0), 0);
+
+      $('healthStats').innerHTML = [
+        ['Avg steps 7d', healthSummary.avg_steps_7d ? fmt(healthSummary.avg_steps_7d) : '-'],
+        ['Avg sleep 7d', healthSummary.avg_sleep_7d ? formatHours(healthSummary.avg_sleep_7d) : '-'],
+        ['Avg resting HR 7d', healthSummary.avg_resting_hr_7d ? fmt(healthSummary.avg_resting_hr_7d) : '-'],
+        ['Workouts this month', fmt(monthWorkouts.length)],
+        ['Calories burned this month', fmt(monthCalories)]
+      ].map(([label, value]) => `<div class="card metric"><span class="muted">${label}</span><strong>${value}</strong></div>`).join('');
+
+      renderBarChart('stepsChart', fillDateWindow(steps, 14, 'step_count'), 'step_count', (row) => `${row.date}: ${fmt(row.step_count)} steps`);
+      renderBarChart('sleepChart', fillDateWindow(sleep, 14, 'sleep_seconds'), 'sleep_seconds', (row) => `${row.date}: ${formatHours(row.sleep_seconds)}`);
+      renderHeartRateChart(heartRate);
+      renderWorkoutRows(workouts);
+      $('healthInsightText').textContent = getHealthInsight();
+    }
+
+    function fillDateWindow(rows, days, valueKey) {
+      const byDate = new Map((rows || []).map((row) => [row.date, row]));
+      return Array.from({ length: days }, (_, i) => {
+        const date = addDays(today(), i - days + 1);
+        return byDate.get(date) || { date, [valueKey]: 0 };
+      });
+    }
+
+    function renderBarChart(id, rows, valueKey, title) {
+      const values = rows.map((row) => Number(row[valueKey] || 0));
+      const max = Math.max(1, ...values);
+      const bars = rows.map((row) => {
+        const value = Number(row[valueKey] || 0);
+        return `<div class="bar" title="${escapeHtml(title(row))}" style="height:${Math.max(3, value / max * 100)}%"></div>`;
+      }).join('');
+      $(id).innerHTML = values.some((value) => value > 0) ? bars : '<p class="muted">No data.</p>';
+    }
+
+    function renderHeartRateChart(rows) {
+      const data = (rows || []).filter((row) => Number(row.resting_bpm || 0) > 0);
+      if (!data.length) {
+        $('heartRateChart').innerHTML = '<p class="muted">No heart rate data.</p>';
+        return;
+      }
+
+      const values = data.map((row) => Number(row.resting_bpm || 0));
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const points = data.map((row, i) => {
+        const x = data.length > 1 ? (i / (data.length - 1)) * 100 : 50;
+        const y = max === min ? 50 : ((Number(row.resting_bpm || 0) - min) / (max - min)) * 90 + 5;
+        return { row, x, bottom: y };
+      });
+      const segments = points.slice(0, -1).map((point, i) => {
+        const next = points[i + 1];
+        const dx = next.x - point.x;
+        const dy = point.bottom - next.bottom;
+        const width = Math.sqrt(dx * dx + dy * dy);
+        const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+        return `<span class="line-segment" style="left:${point.x}%;bottom:${point.bottom}%;width:${width}%;transform:rotate(${angle}deg)"></span>`;
+      }).join('');
+      const dots = points.map(({ row, x, bottom }) => `<span class="dot" title="${row.date}: ${fmt(row.resting_bpm)} bpm" style="left:${x}%;bottom:${bottom}%"></span>`).join('');
+      $('heartRateChart').innerHTML = segments + dots;
+    }
+
+    function renderWorkoutRows(workouts) {
+      const rows = [...(workouts || [])].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 10);
+      $('workoutRows').innerHTML = rows.map((row) => `
+        <tr>
+          <td>${row.date}</td>
+          <td>${escapeHtml(titleCase(row.workout_type))}</td>
+          <td>${formatDuration(row.duration_seconds)}</td>
+          <td>${fmt(row.calories_burned)}</td>
+          <td>${formatDistance(row.distance_meters)}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="5" class="muted">No workouts logged.</td></tr>';
+    }
+
+    function getHealthInsight() {
+      const calorieRows = state.summary.insights.calorie_chart || [];
+      const caloriesByDate = new Map(calorieRows.map((row) => [row.date, Number(row.calories || 0)]));
+      const stepPairs = (state.health_steps || [])
+        .filter((row) => caloriesByDate.has(row.date))
+        .map((row) => [Number(row.step_count || 0), caloriesByDate.get(row.date)]);
+      if (stepPairs.length >= 5 && correlation(stepPairs) < -0.35) {
+        return 'Your step count drops on days you eat more calories.';
+      }
+
+      const workoutDates = new Set((state.health_workouts || []).map((row) => row.date));
+      const sleepRows = (state.health_sleep || []).filter((row) => row.sleep_seconds > 0);
+      const trainingSleep = sleepRows.filter((row) => workoutDates.has(row.date));
+      const restSleep = sleepRows.filter((row) => !workoutDates.has(row.date));
+      if (trainingSleep.length >= 2 && restSleep.length >= 2 && averageValue(trainingSleep, 'sleep_seconds') < averageValue(restSleep, 'sleep_seconds') - 1800) {
+        return 'You sleep less on days you train.';
+      }
+
+      const heartRates = (state.health_heart_rate || []).filter((row) => row.resting_bpm > 0);
+      const recentHeartRates = heartRates.filter((row) => row.date >= addDays(today(), -6));
+      if (recentHeartRates.length >= 2 && heartRates.length >= 7) {
+        const avg7 = averageValue(recentHeartRates, 'resting_bpm');
+        const avg30 = averageValue(heartRates, 'resting_bpm');
+        if (avg7 < avg30 - 1) return 'Your resting heart rate is trending down.';
+        if (avg7 > avg30 + 1) return 'Your resting heart rate is trending up.';
+      }
+
+      return 'Keep logging health data for deeper insights.';
+    }
+
+    function correlation(pairs) {
+      const n = pairs.length;
+      const avgX = pairs.reduce((sum, pair) => sum + pair[0], 0) / n;
+      const avgY = pairs.reduce((sum, pair) => sum + pair[1], 0) / n;
+      const numerator = pairs.reduce((sum, pair) => sum + (pair[0] - avgX) * (pair[1] - avgY), 0);
+      const xDenominator = Math.sqrt(pairs.reduce((sum, pair) => sum + Math.pow(pair[0] - avgX, 2), 0));
+      const yDenominator = Math.sqrt(pairs.reduce((sum, pair) => sum + Math.pow(pair[1] - avgY, 2), 0));
+      return xDenominator && yDenominator ? numerator / (xDenominator * yDenominator) : 0;
+    }
+
+    function averageValue(rows, key) {
+      return rows.length ? rows.reduce((sum, row) => sum + Number(row[key] || 0), 0) / rows.length : 0;
+    }
+
+    function formatHours(seconds) {
+      const hours = Number(seconds || 0) / 3600;
+      return hours ? `${fmt(hours, 1)}h` : '-';
+    }
+
+    function formatDuration(seconds) {
+      const totalMinutes = Math.round(Number(seconds || 0) / 60);
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      if (hours && minutes) return `${hours}h ${minutes}m`;
+      if (hours) return `${hours}h`;
+      return `${minutes}m`;
+    }
+
+    function formatDistance(meters) {
+      const km = Number(meters || 0) / 1000;
+      return km ? `${fmt(km, 2)} km` : '-';
     }
 
     function escapeHtml(value) {

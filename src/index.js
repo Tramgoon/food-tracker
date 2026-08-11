@@ -74,13 +74,52 @@ db.exec(`
     CHECK (source IN ('me', 'agent'))
   );
 
+  CREATE TABLE IF NOT EXISTS health_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    step_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS health_sleep (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    sleep_seconds INTEGER NOT NULL DEFAULT 0,
+    deep_sleep_seconds INTEGER NOT NULL DEFAULT 0,
+    rem_sleep_seconds INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS health_heart_rate (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    resting_bpm INTEGER NOT NULL DEFAULT 0,
+    avg_bpm INTEGER NOT NULL DEFAULT 0,
+    max_bpm INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS health_workouts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    workout_type TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    calories_burned REAL NOT NULL DEFAULT 0,
+    distance_meters REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_foods_date ON foods(date);
   CREATE INDEX IF NOT EXISTS idx_weight_log_date ON weight_log(date);
   CREATE INDEX IF NOT EXISTS idx_groceries_date ON groceries(date);
   CREATE INDEX IF NOT EXISTS idx_groceries_category ON groceries(category);
+  CREATE INDEX IF NOT EXISTS idx_health_steps_date ON health_steps(date);
+  CREATE INDEX IF NOT EXISTS idx_health_sleep_date ON health_sleep(date);
+  CREATE INDEX IF NOT EXISTS idx_health_heart_rate_date ON health_heart_rate(date);
+  CREATE INDEX IF NOT EXISTS idx_health_workouts_date ON health_workouts(date);
 `);
 
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(process.cwd(), 'public')));
 
 function todayISO() {
@@ -101,6 +140,10 @@ function numberValue(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function integerValue(value, fallback = 0) {
+  return Math.round(numberValue(value, fallback));
+}
+
 function readConfig() {
   const rows = db.prepare('SELECT key, value FROM config').all();
   return Object.fromEntries(rows.map((row) => [row.key, row.value]));
@@ -111,6 +154,10 @@ function getExportData() {
     foods: db.prepare('SELECT id, description, calories, protein, carbs, fat, meal_type, date, source, created_at FROM foods ORDER BY date ASC, created_at ASC, id ASC').all(),
     weight_log: db.prepare('SELECT id, weight, date, source, created_at FROM weight_log ORDER BY date ASC, created_at ASC, id ASC').all(),
     groceries: db.prepare('SELECT id, name, quantity, category, price, date, source, created_at FROM groceries ORDER BY date ASC, created_at ASC, id ASC').all(),
+    health_steps: db.prepare('SELECT id, date, step_count, created_at FROM health_steps ORDER BY date ASC, created_at ASC, id ASC').all(),
+    health_sleep: db.prepare('SELECT id, date, sleep_seconds, deep_sleep_seconds, rem_sleep_seconds, created_at FROM health_sleep ORDER BY date ASC, created_at ASC, id ASC').all(),
+    health_heart_rate: db.prepare('SELECT id, date, resting_bpm, avg_bpm, max_bpm, created_at FROM health_heart_rate ORDER BY date ASC, created_at ASC, id ASC').all(),
+    health_workouts: db.prepare('SELECT id, date, workout_type, duration_seconds, calories_burned, distance_meters, created_at FROM health_workouts ORDER BY date ASC, created_at ASC, id ASC').all(),
     config: readConfig(),
     exported_at: nowISO(),
   };
@@ -144,6 +191,10 @@ function exportCsv(data) {
     csvSection('FOOD', ['id', 'description', 'calories', 'protein', 'carbs', 'fat', 'meal_type', 'date', 'source', 'created_at'], data.foods),
     csvSection('WEIGHT', ['id', 'weight', 'date', 'source', 'created_at'], data.weight_log),
     csvSection('GROCERIES', ['id', 'name', 'quantity', 'category', 'price', 'date', 'source', 'created_at'], data.groceries),
+    csvSection('HEALTH_STEPS', ['id', 'date', 'step_count', 'created_at'], data.health_steps),
+    csvSection('HEALTH_SLEEP', ['id', 'date', 'sleep_seconds', 'deep_sleep_seconds', 'rem_sleep_seconds', 'created_at'], data.health_sleep),
+    csvSection('HEALTH_HEART_RATE', ['id', 'date', 'resting_bpm', 'avg_bpm', 'max_bpm', 'created_at'], data.health_heart_rate),
+    csvSection('HEALTH_WORKOUTS', ['id', 'date', 'workout_type', 'duration_seconds', 'calories_burned', 'distance_meters', 'created_at'], data.health_workouts),
     csvSection('CONFIG', ['key', 'value'], configRows),
   ].join('\n\n') + '\n';
 }
@@ -382,6 +433,36 @@ function getGrocerySuggestions() {
   };
 }
 
+function getRecentHealthRows(table, days = 30) {
+  return db.prepare(`
+    SELECT *
+    FROM ${table}
+    WHERE date >= date('now', ?)
+    ORDER BY date ASC, created_at ASC, id ASC
+  `).all(`-${days - 1} days`);
+}
+
+function average(rows, key) {
+  if (!rows.length) return 0;
+  return rows.reduce((sum, row) => sum + Number(row[key] || 0), 0) / rows.length;
+}
+
+function getHealthSummary(steps, sleep, heartRate, workouts) {
+  const sevenDaysAgo = addDays(todayISO(), -6);
+  const steps7 = steps.filter((row) => row.date >= sevenDaysAgo);
+  const sleep7 = sleep.filter((row) => row.date >= sevenDaysAgo);
+  const heartRate7 = heartRate.filter((row) => row.date >= sevenDaysAgo && Number(row.resting_bpm || 0) > 0);
+
+  return {
+    avg_steps_7d: Math.round(average(steps7, 'step_count')),
+    avg_steps_30d: Math.round(average(steps, 'step_count')),
+    avg_sleep_7d: Math.round(average(sleep7, 'sleep_seconds')),
+    avg_resting_hr_7d: Math.round(average(heartRate7, 'resting_bpm')),
+    total_workouts_30d: workouts.length,
+    total_calories_burned_30d: Number(workouts.reduce((sum, row) => sum + Number(row.calories_burned || 0), 0).toFixed(1)),
+  };
+}
+
 function getSummary() {
   const date = todayISO();
   const config = readConfig();
@@ -408,12 +489,37 @@ function getSummary() {
 
 function getState() {
   const date = todayISO();
+  const healthSteps = getRecentHealthRows('health_steps').map((row) => ({ ...row, step_count: Number(row.step_count || 0) }));
+  const healthSleep = getRecentHealthRows('health_sleep').map((row) => ({
+    ...row,
+    sleep_seconds: Number(row.sleep_seconds || 0),
+    deep_sleep_seconds: Number(row.deep_sleep_seconds || 0),
+    rem_sleep_seconds: Number(row.rem_sleep_seconds || 0),
+  }));
+  const healthHeartRate = getRecentHealthRows('health_heart_rate').map((row) => ({
+    ...row,
+    resting_bpm: Number(row.resting_bpm || 0),
+    avg_bpm: Number(row.avg_bpm || 0),
+    max_bpm: Number(row.max_bpm || 0),
+  }));
+  const healthWorkouts = getRecentHealthRows('health_workouts').map((row) => ({
+    ...row,
+    duration_seconds: Number(row.duration_seconds || 0),
+    calories_burned: Number(row.calories_burned || 0),
+    distance_meters: Number(row.distance_meters || 0),
+  }));
+
   return {
     summary: getSummary(),
     today_foods: db.prepare('SELECT * FROM foods WHERE date = ? ORDER BY created_at ASC, id ASC').all(date),
     weight_history: db.prepare('SELECT * FROM weight_log ORDER BY date DESC LIMIT 90').all(),
     groceries: getRecentGroceries(90),
     grocery_suggestions: getGrocerySuggestions(),
+    health_steps: healthSteps,
+    health_sleep: healthSleep,
+    health_heart_rate: healthHeartRate,
+    health_workouts: healthWorkouts,
+    health_summary: getHealthSummary(healthSteps, healthSleep, healthHeartRate, healthWorkouts),
     config: readConfig(),
   };
 }
@@ -498,6 +604,116 @@ function upsertWeight(body, source) {
   return db.prepare('SELECT * FROM weight_log WHERE date = ?').get(date);
 }
 
+function validateHealthSteps(body) {
+  const date = body.date || todayISO();
+  const stepCount = integerValue(body.step_count, NaN);
+  if (!isDate(date)) return { error: 'invalid date' };
+  if (!Number.isFinite(stepCount) || stepCount < 0) return { error: 'step_count must be positive' };
+  return { date, step_count: stepCount };
+}
+
+function validateHealthSleep(body) {
+  const date = body.date || todayISO();
+  const sleepSeconds = integerValue(body.sleep_seconds, NaN);
+  const deepSleepSeconds = integerValue(body.deep_sleep_seconds);
+  const remSleepSeconds = integerValue(body.rem_sleep_seconds);
+  if (!isDate(date)) return { error: 'invalid date' };
+  if (!Number.isFinite(sleepSeconds) || sleepSeconds < 0) return { error: 'sleep_seconds must be positive' };
+  if (deepSleepSeconds < 0 || remSleepSeconds < 0) return { error: 'sleep stage values must be positive' };
+  return {
+    date,
+    sleep_seconds: sleepSeconds,
+    deep_sleep_seconds: deepSleepSeconds,
+    rem_sleep_seconds: remSleepSeconds,
+  };
+}
+
+function validateHealthHeartRate(body) {
+  const date = body.date || todayISO();
+  const restingBpm = integerValue(body.resting_bpm);
+  const avgBpm = integerValue(body.avg_bpm);
+  const maxBpm = integerValue(body.max_bpm);
+  if (!isDate(date)) return { error: 'invalid date' };
+  if (restingBpm < 0 || avgBpm < 0 || maxBpm < 0) return { error: 'heart rate values must be positive' };
+  return { date, resting_bpm: restingBpm, avg_bpm: avgBpm, max_bpm: maxBpm };
+}
+
+function validateHealthWorkout(body) {
+  const date = body.date || todayISO();
+  const workoutType = String(body.workout_type || '').trim();
+  const durationSeconds = integerValue(body.duration_seconds);
+  const caloriesBurned = numberValue(body.calories_burned);
+  const distanceMeters = numberValue(body.distance_meters);
+  if (!isDate(date)) return { error: 'invalid date' };
+  if (!workoutType) return { error: 'workout_type is required' };
+  if (durationSeconds < 0 || caloriesBurned < 0 || distanceMeters < 0) return { error: 'workout values must be positive' };
+  return {
+    date,
+    workout_type: workoutType,
+    duration_seconds: durationSeconds,
+    calories_burned: caloriesBurned,
+    distance_meters: distanceMeters,
+  };
+}
+
+function upsertHealthSteps(body) {
+  const row = validateHealthSteps(body);
+  if (row.error) return row;
+  db.prepare(`
+    INSERT INTO health_steps (date, step_count, created_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(date) DO UPDATE SET
+      step_count = excluded.step_count,
+      created_at = excluded.created_at
+  `).run(row.date, row.step_count, nowISO());
+  return db.prepare('SELECT * FROM health_steps WHERE date = ?').get(row.date);
+}
+
+function upsertHealthSleep(body) {
+  const row = validateHealthSleep(body);
+  if (row.error) return row;
+  db.prepare(`
+    INSERT INTO health_sleep (date, sleep_seconds, deep_sleep_seconds, rem_sleep_seconds, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(date) DO UPDATE SET
+      sleep_seconds = excluded.sleep_seconds,
+      deep_sleep_seconds = excluded.deep_sleep_seconds,
+      rem_sleep_seconds = excluded.rem_sleep_seconds,
+      created_at = excluded.created_at
+  `).run(row.date, row.sleep_seconds, row.deep_sleep_seconds, row.rem_sleep_seconds, nowISO());
+  return db.prepare('SELECT * FROM health_sleep WHERE date = ?').get(row.date);
+}
+
+function upsertHealthHeartRate(body) {
+  const row = validateHealthHeartRate(body);
+  if (row.error) return row;
+  db.prepare(`
+    INSERT INTO health_heart_rate (date, resting_bpm, avg_bpm, max_bpm, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(date) DO UPDATE SET
+      resting_bpm = excluded.resting_bpm,
+      avg_bpm = excluded.avg_bpm,
+      max_bpm = excluded.max_bpm,
+      created_at = excluded.created_at
+  `).run(row.date, row.resting_bpm, row.avg_bpm, row.max_bpm, nowISO());
+  return db.prepare('SELECT * FROM health_heart_rate WHERE date = ?').get(row.date);
+}
+
+function insertHealthWorkout(body) {
+  const row = validateHealthWorkout(body);
+  if (row.error) return row;
+  const result = db.prepare(`
+    INSERT INTO health_workouts (date, workout_type, duration_seconds, calories_burned, distance_meters, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(row.date, row.workout_type, row.duration_seconds, row.calories_burned, row.distance_meters, nowISO());
+  return db.prepare('SELECT * FROM health_workouts WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function arrayBody(body, key) {
+  const value = body[key] || [];
+  return Array.isArray(value) ? value : null;
+}
+
 app.get('/api/summary', requireAgent, (req, res) => {
   res.json(getSummary());
 });
@@ -522,6 +738,62 @@ app.post('/api/weight', requireAgent, (req, res) => {
   const weight = upsertWeight(req.body, 'agent');
   if (weight.error) return res.status(400).json(weight);
   res.status(201).json({ weight, summary: getSummary() });
+});
+
+app.post('/api/health-steps', requireAgent, (req, res) => {
+  const steps = upsertHealthSteps(req.body);
+  if (steps.error) return res.status(400).json(steps);
+  res.status(201).json({ health_steps: steps });
+});
+
+app.post('/api/health-sleep', requireAgent, (req, res) => {
+  const sleep = upsertHealthSleep(req.body);
+  if (sleep.error) return res.status(400).json(sleep);
+  res.status(201).json({ health_sleep: sleep });
+});
+
+app.post('/api/health-heart-rate', requireAgent, (req, res) => {
+  const heartRate = upsertHealthHeartRate(req.body);
+  if (heartRate.error) return res.status(400).json(heartRate);
+  res.status(201).json({ health_heart_rate: heartRate });
+});
+
+app.post('/api/health-workout', requireAgent, (req, res) => {
+  const workout = insertHealthWorkout(req.body);
+  if (workout.error) return res.status(400).json(workout);
+  res.status(201).json({ health_workout: workout });
+});
+
+app.post('/api/health-bulk', requireAgent, (req, res) => {
+  const stepsRows = arrayBody(req.body, 'steps');
+  const sleepRows = arrayBody(req.body, 'sleep');
+  const heartRateRows = arrayBody(req.body, 'heart_rate');
+  const workoutRows = arrayBody(req.body, 'workouts');
+  if (!stepsRows || !sleepRows || !heartRateRows || !workoutRows) {
+    return res.status(400).json({ error: 'steps, sleep, heart_rate, and workouts must be arrays when provided' });
+  }
+
+  const transaction = db.transaction(() => {
+    const steps = stepsRows.map(upsertHealthSteps);
+    const sleep = sleepRows.map(upsertHealthSleep);
+    const heartRate = heartRateRows.map(upsertHealthHeartRate);
+    const workouts = workoutRows.map(insertHealthWorkout);
+    const invalid = [...steps, ...sleep, ...heartRate, ...workouts].find((row) => row.error);
+    if (invalid) throw new Error(invalid.error);
+    return { steps, sleep, heart_rate: heartRate, workouts };
+  });
+
+  try {
+    const result = transaction();
+    res.status(201).json({ imported: {
+      steps: result.steps.length,
+      sleep: result.sleep.length,
+      heart_rate: result.heart_rate.length,
+      workouts: result.workouts.length,
+    } });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.get('/api/state', (req, res) => {
