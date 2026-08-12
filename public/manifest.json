@@ -1,0 +1,16 @@
+{
+  "name": "Food Tracker",
+  "short_name": "Food",
+  "display": "standalone",
+  "background_color": "#111312",
+  "theme_color": "#111312",
+  "start_url": "/",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
