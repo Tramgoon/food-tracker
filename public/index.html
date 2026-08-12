@@ -263,6 +263,8 @@
     ];
     const groceryCategories = ['produce', 'meat', 'dairy', 'pantry', 'frozen', 'snacks', 'drinks', 'household', 'other'];
     let state = null;
+    let activeTab = 'dashboard';
+    let refreshRequestId = 0;
 
     const $ = (id) => document.getElementById(id);
     const fmt = (n, digits = 0) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: digits });
@@ -495,15 +497,18 @@
       return data;
     }
 
+    function setActiveTab(tabId) {
+      activeTab = tabs.some(([id]) => id === tabId) ? tabId : 'dashboard';
+      document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === activeTab));
+      document.querySelectorAll('.nav button').forEach((nav) => nav.classList.toggle('active', nav.dataset.tab === activeTab));
+    }
+
     function renderNav() {
-      $('nav').innerHTML = tabs.map(([id, label]) => `<button data-tab="${id}" class="${id === 'dashboard' ? 'active' : ''}">${label}</button>`).join('');
+      $('nav').innerHTML = tabs.map(([id, label]) => `<button data-tab="${id}" class="${id === activeTab ? 'active' : ''}">${label}</button>`).join('');
       $('nav').addEventListener('click', (event) => {
         const button = event.target.closest('button[data-tab]');
         if (!button) return;
-        document.querySelectorAll('.view').forEach((view) => view.classList.remove('active'));
-        document.querySelectorAll('.nav button').forEach((nav) => nav.classList.remove('active'));
-        $(button.dataset.tab).classList.add('active');
-        button.classList.add('active');
+        setActiveTab(button.dataset.tab);
       });
     }
 
@@ -565,6 +570,18 @@
       $('configForm').innerHTML = fields.map(([key, label, type]) => `<label>${label}<input name="${key}" type="${type}" min="0" step="0.1" value="${c[key] || ''}"></label>`).join('') +
         `<label>Activity<select name="activity_level"><option value="sedentary">sedentary</option><option value="light">light</option><option value="moderate">moderate</option><option value="active">active</option></select></label><button type="submit">Save targets</button>`;
       $('configForm').activity_level.value = c.activity_level || 'sedentary';
+    }
+
+    function collectFormValues(form) {
+      return Object.fromEntries(Array.from(form.elements)
+        .filter((field) => field.name)
+        .map((field) => [field.name, field.value]));
+    }
+
+    function restoreFormValues(form, values) {
+      for (const [name, value] of Object.entries(values || {})) {
+        if (form.elements[name]) form.elements[name].value = value;
+      }
     }
 
     function renderFood() {
@@ -851,13 +868,22 @@
       return String(value || '').replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
     }
 
-    function render() {
+    function render({ preserveDrafts = true } = {}) {
+      const focusedElement = document.activeElement;
+      const preserveConfigDraft = preserveDrafts
+        && focusedElement
+        && focusedElement.matches('input, select')
+        && $('configForm').contains(focusedElement);
+      const configDraft = preserveConfigDraft ? collectFormValues($('configForm')) : null;
+
       renderDashboard();
+      if (configDraft) restoreFormValues($('configForm'), configDraft);
       renderFood();
       renderWeight();
       renderGroceries();
       renderHealth();
       renderInsights();
+      setActiveTab(activeTab);
       roboEyes.updateFromSummary(state.summary);
       $('weightForm').date.value = $('weightForm').date.value || today();
       $('foodForm').date.value = $('foodForm').date.value || today();
@@ -866,9 +892,40 @@
       $('groceryForm').quantity.value = $('groceryForm').quantity.value || '1';
     }
 
+    async function refreshState({ silent = false, preserveDrafts = true } = {}) {
+      const requestId = ++refreshRequestId;
+      try {
+        const nextState = await api('/api/state');
+        if (requestId !== refreshRequestId) return;
+        state = nextState;
+        render({ preserveDrafts });
+      } catch (error) {
+        if (silent) {
+          console.warn(error);
+          return;
+        }
+        toast(error.message);
+      }
+    }
+
     async function load() {
-      state = await api('/api/state');
-      render();
+      await refreshState();
+    }
+
+    function startAutoRefresh() {
+      setInterval(() => refreshState({ silent: true }), 10000);
+    }
+
+    async function runAction(action, message) {
+      await action();
+      await refreshState({ preserveDrafts: false });
+      toast(message);
+    }
+
+    async function resetAndRefresh(form, message) {
+      form.reset();
+      await refreshState({ preserveDrafts: false });
+      toast(message);
     }
 
     function formData(form) {
@@ -882,7 +939,8 @@
     renderNav();
     const roboEyes = new RoboEyes($('robotEyes'));
     $('groceryCategory').innerHTML = groceryCategories.map((category) => `<option value="${category}">${titleCase(category)}</option>`).join('');
-    load().catch((error) => toast(error.message));
+    load();
+    startAutoRefresh();
 
     $('exportJson').addEventListener('click', () => downloadExport('/api/export'));
     $('exportCsv').addEventListener('click', () => downloadExport('/api/export.csv'));
@@ -890,67 +948,46 @@
     $('foodForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       const data = formData(event.target);
-      const res = await api('/api/food-web', { method: 'POST', body: JSON.stringify(data) });
-      state = res.state;
-      event.target.reset();
-      render();
-      toast('Food added');
+      await api('/api/food-web', { method: 'POST', body: JSON.stringify(data) });
+      await resetAndRefresh(event.target, 'Food added');
     });
 
     $('quickForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       const data = { ...formData(event.target), meal_type: 'snack', protein: 0, carbs: 0, fat: 0 };
-      const res = await api('/api/food-web', { method: 'POST', body: JSON.stringify(data) });
-      state = res.state;
-      event.target.reset();
-      render();
-      toast('Quick add saved');
+      await api('/api/food-web', { method: 'POST', body: JSON.stringify(data) });
+      await resetAndRefresh(event.target, 'Quick add saved');
     });
 
     $('mealGroups').addEventListener('click', async (event) => {
       const button = event.target.closest('button[data-delete]');
       if (!button) return;
       if (!confirm('Delete this food entry?')) return;
-      const res = await api(`/api/food-web/${button.dataset.delete}`, { method: 'DELETE' });
-      state = res.state;
-      render();
-      toast('Food deleted');
+      await runAction(() => api(`/api/food-web/${button.dataset.delete}`, { method: 'DELETE' }), 'Food deleted');
     });
 
     $('weightForm').addEventListener('submit', async (event) => {
       event.preventDefault();
-      const res = await api('/api/weight-web', { method: 'POST', body: JSON.stringify(formData(event.target)) });
-      state = res.state;
-      render();
-      toast('Weight saved');
+      await runAction(() => api('/api/weight-web', { method: 'POST', body: JSON.stringify(formData(event.target)) }), 'Weight saved');
     });
 
     $('groceryForm').addEventListener('submit', async (event) => {
       event.preventDefault();
-      const res = await api('/api/groceries-web', { method: 'POST', body: JSON.stringify(formData(event.target)) });
-      state = res.state;
-      event.target.reset();
-      render();
-      toast('Grocery added');
+      await api('/api/groceries-web', { method: 'POST', body: JSON.stringify(formData(event.target)) });
+      await resetAndRefresh(event.target, 'Grocery added');
     });
 
     $('groceryQuickForm').addEventListener('submit', async (event) => {
       event.preventDefault();
-      const res = await api('/api/groceries-web', { method: 'POST', body: JSON.stringify(formData(event.target)) });
-      state = res.state;
-      event.target.reset();
-      render();
-      toast('Quick grocery saved');
+      await api('/api/groceries-web', { method: 'POST', body: JSON.stringify(formData(event.target)) });
+      await resetAndRefresh(event.target, 'Quick grocery saved');
     });
 
     $('groceryGroups').addEventListener('click', async (event) => {
       const button = event.target.closest('button[data-grocery-delete]');
       if (!button) return;
       if (!confirm('Delete this grocery item?')) return;
-      const res = await api(`/api/groceries-web/${button.dataset.groceryDelete}`, { method: 'DELETE' });
-      state = res.state;
-      render();
-      toast('Grocery deleted');
+      await runAction(() => api(`/api/groceries-web/${button.dataset.groceryDelete}`, { method: 'DELETE' }), 'Grocery deleted');
     });
 
     $('configForm').addEventListener('submit', async (event) => {
@@ -959,7 +996,7 @@
       for (const [key, value] of Object.entries(data)) {
         await api('/api/config', { method: 'POST', body: JSON.stringify({ key, value }) });
       }
-      await load();
+      await refreshState({ preserveDrafts: false });
       toast('Targets saved');
     });
   </script>
