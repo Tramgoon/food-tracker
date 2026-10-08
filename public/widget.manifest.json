@@ -1,0 +1,18 @@
+{
+  "name": "Food Tracker Widget",
+  "short_name": "Food Widget",
+  "description": "Remaining calories, macros and weight at a glance.",
+  "display": "standalone",
+  "background_color": "#111312",
+  "theme_color": "#111312",
+  "start_url": "/widget.html?size=medium",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
