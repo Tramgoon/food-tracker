@@ -29,7 +29,7 @@
     .tag{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2px 8px}
     /* Size presets, mirroring common home-screen widget proportions */
     .small{width:170px;height:170px;aspect-ratio:1/1}
-    .medium{width:360px;height:170px}
+    .medium{width:360px;max-width:100%}
     .large{width:360px;min-height:380px}
     .small .widget,.medium .widget{height:100%;display:flex;flex-direction:column}
     .small .widget{justify-content:space-between;padding:14px}
@@ -41,7 +41,7 @@
     .eyes{display:block;width:64px;height:26px;max-width:100%}
     .eyes-slot.corner{position:absolute;right:14px;top:14px}
     .eyes-slot.corner-bottom{position:absolute;right:14px;bottom:14px}
-    .medium .eyes-slot{margin-top:10px}
+    .eyes-row{display:flex;align-items:center;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
     .medium .eyes{width:72px;height:29px}
     .large .eyes{width:72px;height:29px}
     @media (max-width:420px){.medium,.large{width:100%}}
@@ -100,10 +100,11 @@
 
       medium: (s) => `
         <div class="widget">
-          <div class="row">
-            <div>${remainingBlock(s)}<div class="eyes-slot"></div></div>
+          <div class="row" style="gap:18px">
+            <div>${remainingBlock(s)}</div>
             <div style="flex:1;min-width:0">${macroBars(s)}</div>
           </div>
+          <div class="eyes-slot eyes-row"></div>
         </div>`,
 
       large: (s) => `
